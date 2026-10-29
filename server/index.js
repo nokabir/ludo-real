@@ -2,13 +2,12 @@ import express from 'express';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, tx, addCoins, getUser } from './db.js';
+import { db, tx, addCoins, getUser, getSettings } from './db.js';
+import { adminApi } from './admin.js';
 import { AppError, signToken, verifyToken, requireUser, verifyFirebaseToken } from './auth.js';
 import * as R from './rooms.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const WELCOME_COINS = Number(process.env.WELCOME_COINS || 1000);
-const REFERRAL_COINS = Number(process.env.REFERRAL_COINS || 500);
 const SPIN_PRIZES = [50, 100, 150, 200, 250, 300, 500, 1000];
 const SPIN_WEIGHTS = [20, 20, 15, 15, 10, 10, 7, 3];
 const SPIN_HOURS = 24;
@@ -46,13 +45,15 @@ function newRefCode() {
 
 function signIn({ uid, provider, name, photo }) {
   let u = db.prepare('SELECT * FROM users WHERE uid = ?').get(uid);
+  if (u?.banned) throw new AppError('This account has been blocked. Contact support.', 403);
   if (!u) {
+    const welcome = Number(getSettings().welcomeCoins) || 0;
     const display = (name || `Player${crypto.randomInt(1000, 10000)}`).slice(0, 20);
     u = tx(() => {
       const r = db.prepare('INSERT INTO users (uid, provider, name, photo, avatar, ref_code) VALUES (?, ?, ?, ?, ?, ?)')
         .run(uid, provider, display, photo, crypto.randomInt(0, 8), newRefCode());
       const id = Number(r.lastInsertRowid);
-      addCoins(id, WELCOME_COINS, 'welcome', 'Welcome bonus');
+      if (welcome > 0) addCoins(id, welcome, 'welcome', 'Welcome bonus');
       return getUser(id);
     });
   } else if (photo && photo !== u.photo) {
@@ -75,17 +76,22 @@ app.post('/api/auth/dev', (req, res) => {
   res.json(signIn({ uid: `dev:${id}`, provider: 'dev', name: null, photo: null }));
 });
 
-app.get('/api/config', (req, res) => res.json({
-  devLogin: process.env.ALLOW_DEV_LOGIN === '1',
-  notice: process.env.NOTICE || 'Welcome to Ludo Real! Spin the wheel every day for free coins.',
-  links: {
-    whatsapp: process.env.WHATSAPP_URL || '', telegram: process.env.TELEGRAM_URL || '', youtube: process.env.YOUTUBE_URL || '',
-    privacy: process.env.PRIVACY_URL || '/privacy.html', contact: process.env.CONTACT_EMAIL || '',
-    share: process.env.SHARE_URL || 'https://play.google.com/store/apps/details?id=com.definiteautomation.dreamludo',
-  },
-  tables: R.TABLES.map(e => ({ entry: e, prize2: R.prizeFor(e, 2), prize4: R.prizeFor(e, 4) })),
-  spinPrizes: SPIN_PRIZES,
-}));
+app.get('/api/config', (req, res) => {
+  const s = getSettings();
+  res.json({
+    devLogin: process.env.ALLOW_DEV_LOGIN === '1',
+    notice: s.notice,
+    links: {
+      whatsapp: s.whatsapp, telegram: s.telegram, youtube: s.youtube,
+      privacy: process.env.PRIVACY_URL || '/privacy.html', contact: s.contact, share: s.share,
+    },
+    referralCoins: Number(s.referralCoins) || 0,
+    tables: R.TABLES.map(e => ({ entry: e, prize2: R.prizeFor(e, 2), prize4: R.prizeFor(e, 4) })),
+    spinPrizes: SPIN_PRIZES,
+  });
+});
+
+app.use('/api/admin', adminApi);
 
 // Live game stream (EventSource can't send headers, so the token is in the query).
 app.get('/api/match/:id/stream', (req, res) => {
@@ -96,10 +102,19 @@ app.get('/api/match/:id/stream', (req, res) => {
 
 app.use('/api', requireUser);
 
+// Blocked players can't use the API.
+app.use('/api', (req, res, next) => {
+  const u = db.prepare('SELECT banned FROM users WHERE id = ?').get(req.userId);
+  if (!u) return res.status(401).json({ error: 'Account not found' });
+  if (u.banned) return res.status(403).json({ error: 'This account has been blocked. Contact support.' });
+  next();
+});
+
 // ---------- profile & coins ----------
 app.get('/api/me', (req, res) => {
   const u = getUser(req.userId);
   if (!u) throw new AppError('Account not found', 401);
+  db.prepare("UPDATE users SET last_seen = datetime('now') WHERE id = ?").run(u.id);
   res.json({ user: publicUser(u), current: R.current(req.userId) });
 });
 
@@ -141,10 +156,13 @@ app.post('/api/referral', (req, res) => {
     if (!friend) throw new AppError('Code not found');
     if (friend.id === me.id) throw new AppError("That's your own code");
     db.prepare('UPDATE users SET referred_by = ? WHERE id = ?').run(friend.id, me.id);
-    addCoins(me.id, REFERRAL_COINS, 'referral', `Joined with ${friend.name}'s code`);
-    addCoins(friend.id, REFERRAL_COINS, 'referral', `${me.name} joined with your code`);
+    const bonus = Number(getSettings().referralCoins) || 0;
+    if (bonus > 0) {
+      addCoins(me.id, bonus, 'referral', `Joined with ${friend.name}'s code`);
+      addCoins(friend.id, bonus, 'referral', `${me.name} joined with your code`);
+    }
   });
-  res.json({ user: publicUser(getUser(req.userId)), coins: REFERRAL_COINS });
+  res.json({ user: publicUser(getUser(req.userId)), coins: Number(getSettings().referralCoins) || 0 });
 });
 
 app.get('/api/coins', (req, res) => {
@@ -179,7 +197,9 @@ app.post('/api/match/:id/move', (req, res) => { R.move(req.userId, req.params.id
 app.post('/api/match/:id/chat', (req, res) => { R.chat(req.userId, req.params.id, req.body?.text); res.json({ ok: true }); });
 
 app.get('/healthz', (req, res) => res.json({ ok: true, ...R.stats() }));
-app.use(express.static(path.join(__dirname, '..', 'www')));
+// The game runs only in the Android app. Locally (SERVE_GAME=1) the screens can be opened in a browser for testing.
+if (process.env.SERVE_GAME === '1') app.use(express.static(path.join(__dirname, '..', 'www')));
+app.use(express.static(path.join(__dirname, '..', 'admin')));
 
 app.use((err, req, res, next) => {
   const status = err.status && err.status < 600 ? err.status : 500;

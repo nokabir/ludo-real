@@ -26,12 +26,32 @@ export function verifyToken(token) {
   return data.exp > Date.now() ? data : null;
 }
 
+const bearer = req => { const h = req.headers.authorization || ''; return h.startsWith('Bearer ') ? h.slice(7) : req.query.token; };
+
 export function requireUser(req, res, next) {
-  const h = req.headers.authorization || '';
-  const data = verifyToken(h.startsWith('Bearer ') ? h.slice(7) : req.query.token);
-  if (!data) return res.status(401).json({ error: 'Please sign in again' });
+  const data = verifyToken(bearer(req));
+  if (!data || !data.id) return res.status(401).json({ error: 'Please sign in again' });
   req.userId = data.id;
   next();
+}
+
+// ---------- admin ----------
+export function signAdminToken() {
+  const body = Buffer.from(JSON.stringify({ admin: true, exp: Date.now() + 12 * 3600e3 })).toString('base64url');
+  return `${body}.${crypto.createHmac('sha256', SECRET).update(body).digest('base64url')}`;
+}
+
+export function requireAdmin(req, res, next) {
+  const data = verifyToken(bearer(req));
+  if (!data?.admin) return res.status(401).json({ error: 'Admin login required' });
+  next();
+}
+
+// Constant-time compare that doesn't leak length differences through early exit.
+export function safeEqual(a, b) {
+  const ha = crypto.createHash('sha256').update(String(a)).digest();
+  const hb = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
 }
 
 // ---------- Firebase ID tokens ----------

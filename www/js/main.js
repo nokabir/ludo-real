@@ -476,7 +476,7 @@ async function coinsScreen(focus) {
       <p class="hint-c">Coins are just for fun. They can't be bought, sold or withdrawn.</p></section>
     <section class="panel"><div class="panel-head">Free coins</div>
       <div class="earn-row"><div>${ico.wheel}</div><div><b>Daily spin</b><small>Win up to ${fmt(Math.max(...config.spinPrizes))} coins</small></div><button class="btn-green" id="spin">${me.spinAt ? 'Later' : 'Spin'}</button></div>
-      <div class="earn-row" id="referRow"><div class="ref-ico">${ico.share}</div><div><b>Refer &amp; Earn</b><small>You and your friend get 500 coins</small></div><button class="btn-green" id="shareRef">Share</button></div>
+      <div class="earn-row" id="referRow"><div class="ref-ico">${ico.share}</div><div><b>Refer &amp; Earn</b><small>You and your friend get ${fmt(config.referralCoins ?? 500)} coins</small></div><button class="btn-green" id="shareRef">Share</button></div>
       <div class="ref-code">Your code <b>${esc(me.refCode)}</b><button class="tiny-btn" id="copyRef">${ico.copy}</button></div>
       ${me.referred ? '' : `<div class="ref-enter"><input id="refIn" maxlength="6" placeholder="Friend's code" autocapitalize="characters"><button class="btn-yellow" id="useRef">Apply</button></div>`}
     </section>
@@ -485,7 +485,7 @@ async function coinsScreen(focus) {
     </section>`, 'select');
   $('#back').onclick = () => menuScreen();
   $('#spin').onclick = spinModal;
-  const shareRef = () => N.share('Ludo Real', `Play Ludo Real with me! Use my code ${me.refCode} to get 500 free coins.`, linkUrl(config.links.share));
+  const shareRef = () => N.share('Ludo Real', `Play Ludo Real with me! Use my code ${me.refCode} to get ${fmt(config.referralCoins ?? 500)} free coins.`, linkUrl(config.links.share));
   $('#shareRef').onclick = shareRef;
   $('#copyRef').onclick = async () => { try { await navigator.clipboard.writeText(me.refCode); toast('Code copied'); } catch { toast(me.refCode); } };
   $('#useRef')?.addEventListener('click', e => busy(e.currentTarget, async () => {

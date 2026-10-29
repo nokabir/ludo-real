@@ -366,6 +366,35 @@ export function refundInterrupted() {
   if (rows.length) console.log(`Refunded ${rows.length} interrupted game(s)`);
 }
 
+// ---------- admin ----------
+export function liveRooms() {
+  return [...rooms.values()].filter(r => r.status === 'waiting' || r.status === 'playing').map(r => ({
+    ...publicRoom(r),
+    seats: r.seats.map(s => ({ userId: s.bot ? null : s.userId, name: s.name, color: s.color || null, bot: s.bot })),
+    progress: r.g ? Object.fromEntries(r.g.seats.map(s => [s.color, r.g.tokens[s.color].filter(p => p === L.HOME).length])) : null,
+    turn: r.g ? L.currentSeat(r.g).name : null,
+  }));
+}
+
+// Admin stops a game: everyone gets their entry back.
+export function adminCancel(roomId) {
+  const r = getRoom(roomId);
+  if (!['waiting', 'playing'].includes(r.status)) throw new AppError('Game already ended');
+  clearTimeout(r.timer); clearTimeout(r.fillTimer);
+  tx(() => { for (const s of r.seats) if (!s.bot && r.entry > 0) addCoins(s.userId, r.entry, 'refund', 'Game cancelled by admin'); });
+  r.status = 'cancelled';
+  for (const s of r.seats) if (!s.bot && userRoom.get(s.userId) === r.id) userRoom.delete(s.userId);
+  byCode.delete(r.code);
+  saveRow(r);
+  send(r, { type: 'state', room: publicRoom(r), game: null, cancelled: true });
+}
+
+// Remove a banned player from any game they are waiting in or playing.
+export function kickUser(userId) {
+  const r = activeRoomOf(userId);
+  if (r) leave(userId, r.id);
+}
+
 export const stats = () => ({
   online: new Set([...userRoom.keys()]).size,
   waiting: [...rooms.values()].filter(r => r.status === 'waiting').length,

@@ -51,6 +51,34 @@ CREATE TABLE IF NOT EXISTS matches (
 );
 `);
 
+// Admin-editable settings (notice, links, bonus amounts).
+db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)');
+const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+if (!userCols.includes('banned')) db.exec('ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0');
+if (!userCols.includes('last_seen')) db.exec('ALTER TABLE users ADD COLUMN last_seen TEXT');
+
+export const SETTING_DEFAULTS = {
+  notice: process.env.NOTICE || 'Welcome to Ludo Real! Spin the wheel every day for free coins.',
+  whatsapp: process.env.WHATSAPP_URL || '',
+  telegram: process.env.TELEGRAM_URL || '',
+  youtube: process.env.YOUTUBE_URL || '',
+  contact: process.env.CONTACT_EMAIL || '',
+  share: process.env.SHARE_URL || 'https://play.google.com/store/apps/details?id=com.definiteautomation.dreamludo',
+  welcomeCoins: String(process.env.WELCOME_COINS || 1000),
+  referralCoins: String(process.env.REFERRAL_COINS || 500),
+};
+
+export function getSettings() {
+  const out = { ...SETTING_DEFAULTS };
+  for (const r of db.prepare('SELECT key, value FROM settings').all()) if (r.key in out) out[r.key] = r.value;
+  return out;
+}
+
+export function saveSettings(values) {
+  const stmt = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+  for (const [k, v] of Object.entries(values)) if (k in SETTING_DEFAULTS) stmt.run(k, String(v));
+}
+
 export function tx(fn) {
   db.exec('BEGIN IMMEDIATE');
   try { const out = fn(); db.exec('COMMIT'); return out; } catch (err) { db.exec('ROLLBACK'); throw err; }
