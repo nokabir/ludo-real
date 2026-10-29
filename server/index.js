@@ -70,6 +70,22 @@ app.post('/api/auth/firebase', wrap(async (req, res) => {
   res.json(signIn(claims));
 }));
 
+// Guest accounts: the phone keeps a random secret; the account ID is its hash.
+// Doesn't need Firebase. A few new guest accounts per network per hour, unlimited sign-ins.
+const guestSignups = new Map();
+app.post('/api/auth/guest', (req, res) => {
+  const secret = String(req.body?.secret || '');
+  if (!/^[A-Za-z0-9_-]{32,128}$/.test(secret)) throw new AppError('Invalid guest key', 400);
+  const uid = `guest:${crypto.createHash('sha256').update(secret).digest('hex')}`;
+  if (!db.prepare('SELECT 1 FROM users WHERE uid = ?').get(uid)) {
+    const ip = req.headers['x-real-ip'] || req.ip;
+    const recent = (guestSignups.get(ip) || []).filter(t => Date.now() - t < 3600e3);
+    if (recent.length >= 10) throw new AppError('Too many new guest accounts from this network. Try again later or sign in with Google.', 429);
+    guestSignups.set(ip, [...recent, Date.now()]);
+  }
+  res.json(signIn({ uid, provider: 'guest', name: null, photo: null }));
+});
+
 // Browser testing without the Android app (turn off in production).
 app.post('/api/auth/dev', (req, res) => {
   if (process.env.ALLOW_DEV_LOGIN !== '1') throw new AppError('Please use the Android app to sign in', 403);
@@ -87,6 +103,11 @@ app.get('/api/config', (req, res) => {
       privacy: process.env.PRIVACY_URL || '/privacy.html', contact: s.contact, share: s.share,
     },
     referralCoins: Number(s.referralCoins) || 0,
+    ads: {
+      enabled: s.adsEnabled === '1',
+      banner: s.admobBanner, interstitial: s.admobInterstitial, rewarded: s.admobRewarded,
+      interstitialEvery: Number(s.interstitialEvery) || 0, rewardCoins: Number(s.rewardCoins) || 0,
+    },
     tables: R.TABLES.map(e => ({ entry: e, prize2: R.prizeFor(e, 2), prize4: R.prizeFor(e, 4) })),
     spinPrizes: SPIN_PRIZES,
   });
@@ -177,6 +198,20 @@ app.post('/api/referral', (req, res) => {
     }
   });
   res.json({ user: publicUser(getUser(req.userId)), coins: Number(getSettings().referralCoins) || 0 });
+});
+
+// Coins for watching a rewarded ad (limited per day; the app calls this after AdMob reports the reward).
+app.post('/api/reward/ad', (req, res) => {
+  const s = getSettings();
+  const coins = Number(s.rewardCoins) || 0, limit = Number(s.rewardDailyLimit) || 0;
+  if (s.adsEnabled !== '1' || !s.admobRewarded || coins <= 0) throw new AppError('Video rewards are not available right now');
+  const out = tx(() => {
+    const today = db.prepare("SELECT COUNT(*) n FROM coin_tx WHERE user_id = ? AND type = 'adreward' AND created_at >= date('now')").get(req.userId).n;
+    if (today >= limit) throw new AppError(`You've watched ${limit} reward videos today. Come back tomorrow!`);
+    addCoins(req.userId, coins, 'adreward', 'Watched a video');
+    return { coins, left: limit - today - 1 };
+  });
+  res.json({ ...out, user: publicUser(getUser(req.userId)) });
 });
 
 app.get('/api/coins', (req, res) => {

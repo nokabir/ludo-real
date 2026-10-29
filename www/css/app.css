@@ -308,3 +308,8 @@ button:disabled { opacity: .55; }
   .lg-avatar { width: 48px; height: 48px; }
   .lg-dice { width: 44px; height: 44px; }
 }
+
+/* AdMob banner sits on top of the bottom of the screen: leave room for it. */
+body.has-banner .screen { padding-bottom: calc(env(safe-area-inset-bottom) + 76px); }
+body.has-banner .arc-nav { bottom: 60px; }
+body.has-banner .menu { padding-bottom: 190px; }

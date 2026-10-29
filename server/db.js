@@ -130,6 +130,14 @@ export const SETTING_DEFAULTS = {
   welcomeCoins: String(process.env.WELCOME_COINS || 1000),
   referralCoins: String(process.env.REFERRAL_COINS || 500),
   playStoreUrl: '',                 // landing page download button ("Coming soon" while empty)
+  // AdMob ad units (defaults are Google's public test units; replace before publishing).
+  adsEnabled: '1',
+  admobBanner: 'ca-app-pub-3940256099942544/9214589741',
+  admobInterstitial: 'ca-app-pub-3940256099942544/1033173712',
+  admobRewarded: 'ca-app-pub-3940256099942544/5224354917',
+  interstitialEvery: '2',           // show a full-screen ad after every N finished games (0 = never)
+  rewardCoins: '200',               // coins for watching a rewarded ad
+  rewardDailyLimit: '10',           // rewarded ads per player per day
   apiCosts: '',                     // JSON { endpointKey: credits } for the developer API
 };
 

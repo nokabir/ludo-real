@@ -60,6 +60,7 @@ function screen(html, cls = '', keep = false) {
   app.className = `screen ${cls}`;
   app.innerHTML = html;
   window.scrollTo(0, 0);
+  N.showBanner(!!me && !['splash', 'signin-screen'].includes(cls));
 }
 
 const meAvatar = (cls = '') => avatarHtml(me, cls);
@@ -97,19 +98,30 @@ function signInScreen() {
   const sync = () => $$('.btn-signin').forEach(b => b.classList.toggle('dim', !agree.checked));
   agree.onchange = sync; sync();
   $$('[data-link]').forEach(a => a.onclick = e => { e.preventDefault(); N.openUrl(linkUrl(config.links.privacy)); });
-  const go = async (btn, getIdToken) => {
+  const go = async (btn, signIn) => {
     if (!agree.checked) return toast('Please accept the Privacy Policy first', true);
     await busy(btn, async () => {
-      const idToken = await getIdToken();
-      const r = idToken ? await api('/api/auth/firebase', { method: 'POST', body: { idToken } })
-        : await api('/api/auth/dev', { method: 'POST', body: { deviceId: deviceId() } });
+      const r = await signIn();
       setToken(r.token); me = r.user;
       menuScreen(null);
     });
   };
-  $('#google').onclick = e => go(e.currentTarget, N.signInWithGoogle);
-  $('#guest').onclick = e => go(e.currentTarget, N.signInAsGuest);
+  const google = async () => api('/api/auth/firebase', { method: 'POST', body: { idToken: await N.signInWithGoogle() } });
+  // Guest: our own server account tied to a secret kept on this phone (no Firebase needed).
+  const guest = () => api('/api/auth/guest', { method: 'POST', body: { secret: guestSecret() } });
+  $('#google').onclick = e => go(e.currentTarget, google);
+  $('#guest').onclick = e => go(e.currentTarget, guest);
   setBack(null);
+}
+
+function guestSecret() {
+  let s = pref('lr_guest_secret', null);
+  if (!s) {
+    const b = crypto.getRandomValues(new Uint8Array(32));
+    s = btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    setPref('lr_guest_secret', s);
+  }
+  return s;
 }
 
 function deviceId() {
@@ -122,6 +134,7 @@ const linkUrl = u => (u?.startsWith('/') ? (N.API_URL || location.origin) + u : 
 // ---------- main menu ----------
 function menuScreen(current) {
   const L1 = config.links;
+  N.initAds(config.ads).then(() => N.showBanner(true));
   screen(`
     <header class="top-bar">
       <button class="me-chip" id="profile">${meAvatar('sm')}<b>${esc(me.name)}</b></button>
@@ -201,7 +214,7 @@ function selectScreen(kind, players = Number(pref('lr_players', 2))) {
   $$('.cp').forEach(b => b.onclick = () => { setPref('lr_color', b.dataset.color); $$('.cp').forEach(x => x.classList.toggle('on', x === b)); });
   $$('[data-players]').forEach(b => b.onclick = () => { setPref('lr_players', b.dataset.players); selectScreen(kind, +b.dataset.players); });
   $$('.table-tile').forEach(b => b.onclick = () => {
-    if (b.classList.contains('locked')) return toast('Not enough coins. Spin the wheel for free coins!', true);
+    if (b.classList.contains('locked')) return toast(N.rewardedAvailable() ? 'Not enough coins. Watch a video or spin the wheel in My Coins!' : 'Not enough coins. Spin the wheel for free coins!', true);
     busy(b, async () => {
       const room = await api('/api/match/table', { method: 'POST', body: { kind, players, entry: +b.dataset.entry, color: pref('lr_color', 'red') } });
       await reloadMe();
@@ -309,7 +322,6 @@ function onlineGame(roomId) {
         ${g.endsAt ? '<span class="timer-chip" id="clock">10:00</span>' : ''}
         <span class="prize-chip">${ico.trophy}${fmt(r.prize)} win</span>
       </header>
-      ${r.botsFilled ? '<p class="bot-note">Not enough players online: computer players joined this table.</p>' : ''}
       <div id="board"></div>
       <div class="game-tools">
         ${chatOn ? `<button class="sq-btn chat-btn" id="chat" aria-label="Chat">${ico.chat}</button>` : ''}
@@ -389,8 +401,8 @@ function onlineGame(roomId) {
         ${won && r.result.prize ? `<p class="won-coins">${ico.coin}<b>+${fmt(r.result.prize)}</b></p>` : '<p class="hint-c">Better luck next time!</p>'}
         <div class="row-c"><button class="btn-green" id="again">Play Again</button><button class="btn-yellow" id="home">Home</button></div>
       </div>`, { onClose: () => menuScreen() });
-    $('#home', m.el).onclick = () => m.close();
-    $('#again', m.el).onclick = () => { m.el.remove(); ['friends', 'api'].includes(r.kind) ? friendsScreen() : selectScreen(r.kind, r.players); };
+    $('#home', m.el).onclick = async () => { await N.maybeInterstitial(); m.close(); };
+    $('#again', m.el).onclick = async () => { m.el.remove(); await N.maybeInterstitial(); ['friends', 'api'].includes(r.kind) ? friendsScreen() : selectScreen(r.kind, r.players); };
   }
 }
 
@@ -456,8 +468,8 @@ function localGame(seats, opts) {
       if (iWon) sfx.win();
       const m = modal(iWon ? 'You Won!' : 'Game Over', `<div class="result"><div class="crown">${ico.trophy}</div><h2>${iWon ? 'Congratulations!' : `${esc(winnerName)} won`}</h2>
         <div class="row-c"><button class="btn-green" id="again">Play Again</button><button class="btn-yellow" id="home">Home</button></div></div>`, { onClose: () => menuScreen() });
-      $('#home', m.el).onclick = () => m.close();
-      $('#again', m.el).onclick = () => { m.el.remove(); localGame(seats, opts); };
+      $('#home', m.el).onclick = async () => { await N.maybeInterstitial(); m.close(); };
+      $('#again', m.el).onclick = async () => { m.el.remove(); await N.maybeInterstitial(); localGame(seats, opts); };
     },
   });
   cleanup = () => game.stop();
@@ -477,6 +489,7 @@ async function coinsScreen(focus) {
       <p class="hint-c">Coins are just for fun. They can't be bought, sold or withdrawn.</p></section>
     <section class="panel"><div class="panel-head">Free coins</div>
       <div class="earn-row"><div>${ico.wheel}</div><div><b>Daily spin</b><small>Win up to ${fmt(Math.max(...config.spinPrizes))} coins</small></div><button class="btn-green" id="spin">${me.spinAt ? 'Later' : 'Spin'}</button></div>
+      ${N.rewardedAvailable() ? `<div class="earn-row"><div class="ref-ico">${ico.gift}</div><div><b>Watch a video</b><small>Get ${fmt(config.ads.rewardCoins)} coins</small></div><button class="btn-green" id="watchAd">Watch</button></div>` : ''}
       <div class="earn-row" id="referRow"><div class="ref-ico">${ico.share}</div><div><b>Refer &amp; Earn</b><small>You and your friend get ${fmt(config.referralCoins ?? 500)} coins</small></div><button class="btn-green" id="shareRef">Share</button></div>
       <div class="ref-code">Your code <b>${esc(me.refCode)}</b><button class="tiny-btn" id="copyRef">${ico.copy}</button></div>
       ${me.referred ? '' : `<div class="ref-enter"><input id="refIn" maxlength="6" placeholder="Friend's code" autocapitalize="characters"><button class="btn-yellow" id="useRef">Apply</button></div>`}
@@ -486,6 +499,12 @@ async function coinsScreen(focus) {
     </section>`, 'select');
   $('#back').onclick = () => menuScreen();
   $('#spin').onclick = spinModal;
+  $('#watchAd')?.addEventListener('click', e => busy(e.currentTarget, async () => {
+    const watched = await N.showRewarded().catch(() => { throw new Error('No video available right now. Try again later.'); });
+    if (!watched) return toast('Watch the whole video to get the coins', true);
+    const r = await api('/api/reward/ad', { method: 'POST' });
+    me = r.user; toast(`+${fmt(r.coins)} coins!`); coinsScreen();
+  }));
   const shareRef = () => N.share('Ludo Real', `Play Ludo Real with me! Use my code ${me.refCode} to get ${fmt(config.referralCoins ?? 500)} free coins.`, linkUrl(config.links.share));
   $('#shareRef').onclick = shareRef;
   $('#copyRef').onclick = async () => { try { await navigator.clipboard.writeText(me.refCode); toast('Code copied'); } catch { toast(me.refCode); } };
@@ -567,7 +586,7 @@ function settingsModal() {
   $('#priv', m.el).onclick = () => N.openUrl(linkUrl(L1.privacy));
   $('#contact', m.el)?.addEventListener('click', () => N.openUrl(`mailto:${L1.contact}`));
   $('#logout', m.el).onclick = async () => {
-    if (me.provider !== 'google.com' && !confirm('You are a guest. If you log out, this account and its coins can’t be recovered. Log out?')) return;
+    if (me.provider !== 'google.com' && !confirm('You are playing as a guest. Your progress is saved on this phone only: tap "Play as Guest" to come back. If you uninstall the app or clear its data, it’s lost. Log out?')) return;
     await N.signOutNative(); setToken(null); m.el.remove(); signInScreen();
   };
 }

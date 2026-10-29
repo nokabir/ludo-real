@@ -151,6 +151,8 @@ export function roll(g, value) {
 export function pass(g) {
   if (g.phase !== 'pass') throw new Error('Nothing to pass');
   g.seq++;
+  // Record the pass so viewers don't replay the previous dice roll.
+  g.last = { type: 'pass', color: currentSeat(g).color, value: g.dice };
   endTurn(g, false);
 }
 

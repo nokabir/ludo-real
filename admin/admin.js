@@ -263,11 +263,24 @@ async function settings() {
       </div>
       <div class="field"><label>Google Play link (landing page download button)</label><input class="input" name="playStoreUrl" placeholder="https://play.google.com/store/apps/details?id=…" value="${esc(v.playStoreUrl)}"><span class="hint">Leave empty to show “Coming soon” on ludoreal.in.</span></div>
       <div class="field"><label>Share / app link</label><input class="input" name="share" value="${esc(v.share)}"><span class="hint">Used by Share and Refer &amp; Earn. Your Play Store link.</span></div>
+      <div class="sec" style="margin:22px 0 10px;padding-top:16px;border-top:1px solid var(--line)"><h3>Ads (AdMob)</h3>
+        <label style="display:flex;gap:8px;align-items:center;font-weight:700"><input type="hidden" name="adsEnabled" value="0"><input type="checkbox" name="adsEnabled" value="1" ${v.adsEnabled === '1' ? 'checked' : ''} style="width:18px;height:18px;accent-color:#fab005"> Show ads in the app</label></div>
+      <p class="hint" style="margin:-4px 0 14px">The ad unit IDs come from your AdMob account (Apps → Ad units). Values starting with <code>ca-app-pub-3940256099942544</code> are Google's test ads: replace them before publishing. Changes reach players the next time they open the app.</p>
+      <div class="settings-grid">
+        <div class="field"><label>Banner ad unit ID</label><input class="input" name="admobBanner" placeholder="ca-app-pub-…/…" value="${esc(v.admobBanner)}"><span class="hint">Shown at the bottom of the screens. Empty = no banner.</span></div>
+        <div class="field"><label>Interstitial ad unit ID</label><input class="input" name="admobInterstitial" placeholder="ca-app-pub-…/…" value="${esc(v.admobInterstitial)}"><span class="hint">Full-screen ad after games. Empty = none.</span></div>
+        <div class="field"><label>Rewarded ad unit ID</label><input class="input" name="admobRewarded" placeholder="ca-app-pub-…/…" value="${esc(v.admobRewarded)}"><span class="hint">"Watch a video for coins". Empty = hidden.</span></div>
+        <div class="field"><label>Full-screen ad after every … games</label><input class="input" name="interstitialEvery" type="number" min="0" value="${esc(v.interstitialEvery)}"><span class="hint">0 = never.</span></div>
+        <div class="field"><label>Coins per rewarded video</label><input class="input" name="rewardCoins" type="number" min="0" value="${esc(v.rewardCoins)}"></div>
+        <div class="field"><label>Rewarded videos per player per day</label><input class="input" name="rewardDailyLimit" type="number" min="0" value="${esc(v.rewardDailyLimit)}"></div>
+      </div>
       <button class="btn">Save settings</button>
     </form>`);
   $('#sf').onsubmit = e => {
     e.preventDefault();
-    busy(e.submitter, async () => { await api('/api/admin/settings', { method: 'PUT', body: Object.fromEntries(new FormData(e.target)) }); toast('Settings saved'); });
+    const body = Object.fromEntries(new FormData(e.target));
+    body.adsEnabled = new FormData(e.target).getAll('adsEnabled').includes('1') ? '1' : '0';   // checkbox + hidden fallback
+    busy(e.submitter, async () => { await api('/api/admin/settings', { method: 'PUT', body }); toast('Settings saved'); });
   };
 }
 

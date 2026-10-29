@@ -42,7 +42,7 @@ adminApi.get('/stats', (req, res) => {
     users: q1('SELECT COUNT(*) n FROM users').n,
     usersToday: q1("SELECT COUNT(*) n FROM users WHERE date(created_at) = date('now')").n,
     google: q1("SELECT COUNT(*) n FROM users WHERE provider = 'google.com'").n,
-    guests: q1("SELECT COUNT(*) n FROM users WHERE provider = 'anonymous'").n,
+    guests: q1("SELECT COUNT(*) n FROM users WHERE provider IN ('anonymous', 'guest')").n,
     activeToday: q1("SELECT COUNT(*) n FROM users WHERE last_seen >= datetime('now', '-1 day')").n,
     banned: q1('SELECT COUNT(*) n FROM users WHERE banned = 1').n,
     gamesToday: q1("SELECT COUNT(*) n FROM matches WHERE status = 'over' AND date(finished_at) = date('now')").n,
@@ -61,7 +61,7 @@ adminApi.get('/stats', (req, res) => {
 adminApi.get('/users', (req, res) => {
   const q = `%${String(req.query.q || '').trim()}%`;
   const sort = { coins: 'coins DESC', won: 'won DESC', new: 'id DESC' }[req.query.sort] || 'id DESC';
-  const filter = req.query.filter === 'banned' ? 'AND banned = 1' : req.query.filter === 'google' ? "AND provider = 'google.com'" : req.query.filter === 'guest' ? "AND provider = 'anonymous'" : '';
+  const filter = req.query.filter === 'banned' ? 'AND banned = 1' : req.query.filter === 'google' ? "AND provider = 'google.com'" : req.query.filter === 'guest' ? "AND provider IN ('anonymous', 'guest')" : '';
   const rows = db.prepare(`SELECT * FROM users WHERE (name LIKE ? OR ref_code LIKE ? OR CAST(id AS TEXT) = ?) ${filter} ORDER BY ${sort} LIMIT 200`)
     .all(q, q, String(req.query.q || '').trim());
   res.json(rows.map(adminUser));
@@ -128,13 +128,17 @@ adminApi.put('/settings', (req, res) => {
   const v = req.body || {};
   const clean = {};
   for (const k of Object.keys(SETTING_DEFAULTS)) if (k !== 'apiCosts' && v[k] !== undefined) clean[k] = String(v[k]).trim();
-  for (const k of ['welcomeCoins', 'referralCoins']) {
+  for (const k of ['welcomeCoins', 'referralCoins', 'rewardCoins', 'rewardDailyLimit', 'interstitialEvery']) {
     if (clean[k] !== undefined && !(Number(clean[k]) >= 0 && Number(clean[k]) <= 1_000_000)) throw new AppError(`${k} must be between 0 and 1,000,000`);
   }
   for (const k of ['whatsapp', 'telegram', 'youtube', 'share', 'playStoreUrl']) {
     if (clean[k] && !/^https?:\/\//i.test(clean[k])) throw new AppError(`${k} link must start with https://`);
   }
   if (clean.contact && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(clean.contact)) throw new AppError('Enter a valid contact email');
+  for (const k of ['admobBanner', 'admobInterstitial', 'admobRewarded']) {
+    if (clean[k] && !/^ca-app-pub-\d{16}\/\d{10}$/.test(clean[k])) throw new AppError(`${k}: enter an ad unit ID like ca-app-pub-1234567890123456/1234567890`);
+  }
+  if (clean.adsEnabled !== undefined) clean.adsEnabled = clean.adsEnabled === '1' || clean.adsEnabled === 'on' ? '1' : '0';
   if (clean.notice !== undefined && clean.notice.length > 500) throw new AppError('Notice is too long (max 500 characters)');
   saveSettings(clean);
   res.json({ values: getSettings() });

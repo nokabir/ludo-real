@@ -105,8 +105,17 @@ function tone(freq, dur = .08, type = 'sine', gain = .08, when = 0) {
     o.connect(g).connect(audio.destination); o.start(t); o.stop(t + dur);
   } catch { /* audio not available */ }
 }
+const diceSound = new Audio(new URL('../sounds/dice.mp3', import.meta.url).href);
+diceSound.preload = 'auto';
+
 export const sfx = {
-  roll() { for (let i = 0; i < 6; i++) tone(180 + Math.random() * 220, .05, 'square', .03, i * .06); },
+  roll() {
+    if (muted) return;
+    try {
+      diceSound.currentTime = 0;
+      diceSound.play().catch(() => {});
+    } catch { /* audio not available */ }
+  },
   step() { tone(620, .05, 'triangle', .05); },
   capture() { tone(160, .25, 'sawtooth', .07); tone(90, .3, 'sine', .08, .05); },
   home() { [660, 880, 1100].forEach((f, i) => tone(f, .14, 'triangle', .06, i * .09)); },
@@ -142,8 +151,10 @@ export class LudoView {
     return [u / 15 * 100, v / 15 * 100];
   }
 
+  // The board turns counter-clockwise by `rot` quarter turns, so each panel moves the same way:
+  // the viewer's colour always lands bottom-left.
   corner(color) {
-    return CORNERS[(L.COLORS.indexOf(color) + this.rot) % 4];
+    return CORNERS[(L.COLORS.indexOf(color) - this.rot + 4) % 4];
   }
 
   render() {
