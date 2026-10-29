@@ -1,0 +1,28 @@
+{
+  "name": "ludo-real",
+  "version": "1.0.0",
+  "description": "Ludo Real: free online Ludo game (Android app + game server)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "dev": "node --watch --env-file-if-exists=.env server/index.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@capacitor-firebase/authentication": "^7.5.0",
+    "@capacitor/android": "^7.6.10",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/browser": "^7.0.5",
+    "@capacitor/core": "^7.6.10",
+    "@capacitor/haptics": "^7.0.5",
+    "@capacitor/share": "^7.0.4",
+    "express": "^4.21.2",
+    "firebase": "^11.10.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.6.10"
+  }
+}

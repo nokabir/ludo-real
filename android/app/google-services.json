@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "594582299429",
+    "firebase_url": "https://dream-ludo-6efd8-default-rtdb.firebaseio.com",
+    "project_id": "dream-ludo-6efd8",
+    "storage_bucket": "dream-ludo-6efd8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:594582299429:android:228dcf1ebe938daa0370cc",
+        "android_client_info": {
+          "package_name": "com.definiteautomation.dreamludo"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "594582299429-e239aigivteuep4oe0phr92c1mp6doa2.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBxmLwuLLxRvQlCbk-mtima2N9FjBMr5dc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "594582299429-e239aigivteuep4oe0phr92c1mp6doa2.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

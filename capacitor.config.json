@@ -1,0 +1,15 @@
+{
+  "appId": "com.definiteautomation.dreamludo",
+  "appName": "Ludo Real",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#1c2a4f"
+  },
+  "plugins": {
+    "FirebaseAuthentication": {
+      "skipNativeAuth": false,
+      "providers": ["google.com"]
+    }
+  }
+}
