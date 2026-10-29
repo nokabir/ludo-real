@@ -4,7 +4,7 @@ export const isNative = !!Cap?.isNativePlatform?.();
 const P = name => Cap?.Plugins?.[name];
 
 // Server address. In the app the screens are bundled in the APK, so the API is remote.
-export const API_URL = isNative ? (window.LUDO_API_URL || 'https://ludo-real.onrender.com') : '';
+export const API_URL = isNative ? (window.LUDO_API_URL || 'https://ludoreal.in') : '';
 
 // ---------- sign-in (Firebase Authentication) ----------
 async function idToken() {
