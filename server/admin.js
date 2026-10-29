@@ -3,6 +3,8 @@ import express from 'express';
 import { db, tx, addCoins, getUser, getSettings, saveSettings, SETTING_DEFAULTS } from './db.js';
 import { AppError, signAdminToken, requireAdmin, safeEqual } from './auth.js';
 import * as R from './rooms.js';
+import { ENDPOINTS, getCosts, publicPlan, devSummary } from './devapi.js';
+import { hashPassword as hashDevPassword } from './auth.js';
 
 export const adminApi = express.Router();
 
@@ -125,15 +127,157 @@ adminApi.get('/settings', (req, res) => res.json({ values: getSettings(), defaul
 adminApi.put('/settings', (req, res) => {
   const v = req.body || {};
   const clean = {};
-  for (const k of Object.keys(SETTING_DEFAULTS)) if (v[k] !== undefined) clean[k] = String(v[k]).trim();
+  for (const k of Object.keys(SETTING_DEFAULTS)) if (k !== 'apiCosts' && v[k] !== undefined) clean[k] = String(v[k]).trim();
   for (const k of ['welcomeCoins', 'referralCoins']) {
     if (clean[k] !== undefined && !(Number(clean[k]) >= 0 && Number(clean[k]) <= 1_000_000)) throw new AppError(`${k} must be between 0 and 1,000,000`);
   }
-  for (const k of ['whatsapp', 'telegram', 'youtube', 'share']) {
+  for (const k of ['whatsapp', 'telegram', 'youtube', 'share', 'playStoreUrl']) {
     if (clean[k] && !/^https?:\/\//i.test(clean[k])) throw new AppError(`${k} link must start with https://`);
   }
   if (clean.contact && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(clean.contact)) throw new AppError('Enter a valid contact email');
   if (clean.notice !== undefined && clean.notice.length > 500) throw new AppError('Notice is too long (max 500 characters)');
   saveSettings(clean);
   res.json({ values: getSettings() });
+});
+
+// ---------- developer API ----------
+adminApi.get('/api/overview', (req, res) => {
+  res.json({
+    developers: q1('SELECT COUNT(*) n FROM developers').n,
+    newThisWeek: q1("SELECT COUNT(*) n FROM developers WHERE created_at >= datetime('now', '-7 day')").n,
+    pendingRequests: q1('SELECT COUNT(*) n FROM developers WHERE requested_plan IS NOT NULL').n,
+    callsToday: q1("SELECT COUNT(*) n FROM api_logs WHERE date(created_at) = date('now')").n,
+    creditsToday: q1("SELECT COALESCE(SUM(cost), 0) n FROM api_logs WHERE date(created_at) = date('now')").n,
+    errorsToday: q1("SELECT COUNT(*) n FROM api_logs WHERE date(created_at) = date('now') AND status >= 400").n,
+    roomsToday: q1("SELECT COUNT(*) n FROM matches WHERE kind = 'api' AND date(created_at) = date('now')").n,
+    byEndpoint: db.prepare("SELECT endpoint, COUNT(*) calls, COALESCE(SUM(cost), 0) credits FROM api_logs WHERE created_at >= datetime('now', '-7 day') GROUP BY endpoint ORDER BY calls DESC").all(),
+  });
+});
+
+adminApi.get('/api/developers', (req, res) => {
+  const q = `%${String(req.query.q || '').trim()}%`;
+  const filter = req.query.filter === 'pending' ? 'AND d.requested_plan IS NOT NULL' : req.query.filter === 'suspended' ? "AND d.status = 'suspended'" : '';
+  const rows = db.prepare(`SELECT d.*, p.name plan_name, rp.name requested_name,
+      (SELECT COUNT(*) FROM api_logs l WHERE l.dev_id = d.id AND l.created_at >= date('now', 'start of month')) calls_month
+    FROM developers d LEFT JOIN plans p ON p.id = d.plan_id LEFT JOIN plans rp ON rp.id = d.requested_plan
+    WHERE (d.email LIKE ? OR d.name LIKE ? OR COALESCE(d.company, '') LIKE ?) ${filter}
+    ORDER BY (d.requested_plan IS NOT NULL) DESC, d.id DESC LIMIT 200`).all(q, q, q);
+  res.json(rows.map(d => ({
+    id: d.id, email: d.email, name: d.name, company: d.company, status: d.status, plan: d.plan_name, planId: d.plan_id,
+    credits: d.credits, bonusCredits: d.bonus_credits, requested: d.requested_name, requestedId: d.requested_plan,
+    callsMonth: d.calls_month, createdAt: d.created_at,
+  })));
+});
+
+adminApi.get('/api/developers/:id', (req, res) => {
+  const dev = db.prepare('SELECT * FROM developers WHERE id = ?').get(+req.params.id);
+  if (!dev) throw new AppError('Developer not found', 404);
+  res.json({
+    dev: devSummary(dev),
+    keys: db.prepare('SELECT id, name, prefix, last_used, revoked, created_at FROM api_keys WHERE dev_id = ? ORDER BY id DESC').all(dev.id),
+    logs: db.prepare('SELECT endpoint, status, cost, ms, ip, created_at FROM api_logs WHERE dev_id = ? ORDER BY id DESC LIMIT 50').all(dev.id),
+    rooms: db.prepare("SELECT status, COUNT(*) n FROM matches WHERE api_dev_id = ? AND kind = 'api' GROUP BY status").all(dev.id),
+  });
+});
+
+adminApi.patch('/api/developers/:id', (req, res) => {
+  const id = +req.params.id;
+  const dev = db.prepare('SELECT * FROM developers WHERE id = ?').get(id);
+  if (!dev) throw new AppError('Developer not found', 404);
+  const { planId, addCredits, status, approveRequest, rejectRequest, newPassword, resetCredits } = req.body || {};
+  tx(() => {
+    const setPlan = pid => {
+      const p = db.prepare('SELECT * FROM plans WHERE id = ?').get(pid);
+      if (!p) throw new AppError('Plan not found');
+      db.prepare("UPDATE developers SET plan_id = ?, credits = ?, period = strftime('%Y-%m', 'now'), requested_plan = NULL, requested_at = NULL WHERE id = ?").run(p.id, p.credits, id);
+    };
+    if (approveRequest && dev.requested_plan) setPlan(dev.requested_plan);
+    if (rejectRequest) db.prepare('UPDATE developers SET requested_plan = NULL, requested_at = NULL WHERE id = ?').run(id);
+    if (planId) setPlan(+planId);
+    if (resetCredits) {
+      const p = db.prepare('SELECT credits FROM plans WHERE id = (SELECT plan_id FROM developers WHERE id = ?)').get(id);
+      db.prepare('UPDATE developers SET credits = ? WHERE id = ?').run(p?.credits || 0, id);
+    }
+    if (addCredits !== undefined && addCredits !== '' && Number(addCredits) !== 0) {
+      const n = Math.trunc(Number(addCredits));
+      if (!Number.isFinite(n) || Math.abs(n) > 100_000_000) throw new AppError('Enter a valid credit amount');
+      db.prepare('UPDATE developers SET bonus_credits = MAX(0, bonus_credits + ?) WHERE id = ?').run(n, id);
+    }
+    if (status !== undefined) {
+      if (!['active', 'suspended'].includes(status)) throw new AppError('Unknown status');
+      db.prepare('UPDATE developers SET status = ? WHERE id = ?').run(status, id);
+    }
+    if (newPassword) {
+      if (String(newPassword).length < 8) throw new AppError('Password must be at least 8 characters');
+      db.prepare('UPDATE developers SET password_hash = ? WHERE id = ?').run(hashDevPassword(newPassword), id);
+    }
+  });
+  res.json(devSummary(db.prepare('SELECT * FROM developers WHERE id = ?').get(id)));
+});
+
+adminApi.get('/api/plans', (req, res) => {
+  res.json({
+    plans: db.prepare('SELECT p.*, (SELECT COUNT(*) FROM developers d WHERE d.plan_id = p.id) devs FROM plans p ORDER BY sort, id').all()
+      .map(p => ({ ...publicPlan(p), developers: p.devs })),
+    endpoints: ENDPOINTS.map(e => ({ key: e.key, method: e.method, path: e.path, title: e.title, always: !!e.always })),
+  });
+});
+
+function planFields(b) {
+  const name = String(b.name || '').trim();
+  if (name.length < 2 || name.length > 30) throw new AppError('Plan name must be 2 to 30 characters');
+  const credits = Math.trunc(Number(b.credits)), rate = Math.trunc(Number(b.ratePerMin));
+  if (!(credits >= 0 && credits <= 1e9)) throw new AppError('Monthly credits must be 0 or more');
+  if (!(rate >= 1 && rate <= 10000)) throw new AppError('Rate limit must be 1 to 10,000 per minute');
+  const valid = new Set(ENDPOINTS.map(e => e.key));
+  const endpoints = [...new Set((Array.isArray(b.endpoints) ? b.endpoints : []).filter(k => valid.has(k)))];
+  return [name, String(b.price || '').trim().slice(0, 40), credits, rate, JSON.stringify(endpoints),
+    String(b.description || '').trim().slice(0, 200) || null, b.active === false || b.active === 'false' ? 0 : 1,
+    b.isDefault ? 1 : 0, Math.trunc(Number(b.sort) || 0)];
+}
+
+adminApi.post('/api/plans', (req, res) => {
+  const f = planFields(req.body || {});
+  const r = tx(() => {
+    if (f[7]) db.prepare('UPDATE plans SET is_default = 0').run();
+    return db.prepare('INSERT INTO plans (name, price, credits, rate_per_min, endpoints, description, active, is_default, sort) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...f);
+  });
+  res.json(publicPlan(db.prepare('SELECT * FROM plans WHERE id = ?').get(r.lastInsertRowid)));
+});
+
+adminApi.put('/api/plans/:id', (req, res) => {
+  const id = +req.params.id;
+  if (!db.prepare('SELECT 1 FROM plans WHERE id = ?').get(id)) throw new AppError('Plan not found', 404);
+  const f = planFields(req.body || {});
+  tx(() => {
+    if (f[7]) db.prepare('UPDATE plans SET is_default = 0').run();
+    db.prepare('UPDATE plans SET name = ?, price = ?, credits = ?, rate_per_min = ?, endpoints = ?, description = ?, active = ?, is_default = ?, sort = ? WHERE id = ?').run(...f, id);
+  });
+  res.json(publicPlan(db.prepare('SELECT * FROM plans WHERE id = ?').get(id)));
+});
+
+adminApi.get('/api/costs', (req, res) => {
+  const costs = getCosts();
+  res.json(ENDPOINTS.map(e => ({ key: e.key, method: e.method, path: e.path, title: e.title, cost: costs[e.key], defaultCost: e.defaultCost })));
+});
+
+adminApi.put('/api/costs', (req, res) => {
+  const out = {};
+  for (const e of ENDPOINTS) {
+    const v = req.body?.[e.key];
+    if (v === undefined || v === '') continue;
+    const n = Math.trunc(Number(v));
+    if (!(n >= 0 && n <= 1_000_000)) throw new AppError(`Cost for ${e.key} must be 0 or more`);
+    out[e.key] = n;
+  }
+  let saved = {};
+  try { saved = JSON.parse(getSettings().apiCosts || '{}'); } catch { /* ignore */ }
+  saveSettings({ apiCosts: JSON.stringify({ ...saved, ...out }) });
+  res.json(getCosts());
+});
+
+adminApi.get('/api/logs', (req, res) => {
+  const dev = req.query.dev ? +req.query.dev : null;
+  res.json(db.prepare(`SELECT l.*, d.email FROM api_logs l LEFT JOIN developers d ON d.id = l.dev_id ${dev ? 'WHERE l.dev_id = ?' : ''} ORDER BY l.id DESC LIMIT 200`)
+    .all(...(dev ? [dev] : [])));
 });

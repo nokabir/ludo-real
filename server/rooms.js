@@ -17,6 +17,16 @@ const BOT_DELAY = 850, AUTO_DELAY = 700, PASS_DELAY = 1200;
 const BOT_NAMES = ['Aarav', 'Vihaan', 'Ishaan', 'Kabir', 'Riya', 'Ananya', 'Meera', 'Arjun', 'Saanvi', 'Rohan', 'Diya', 'Kiran', 'Zoya', 'Dev', 'Tara', 'Neel'];
 const OPPOSITE = { red: 'yellow', yellow: 'red', green: 'blue', blue: 'green' };
 
+const API_EXPIRE_MIN = Number(process.env.API_ROOM_EXPIRE_MINUTES || 30);
+
+// Developer-API events (player joined, started, finished, cancelled, expired) go to this listener.
+let roomListener = () => {};
+export const onRoomEvent = fn => { roomListener = fn; };
+function emit(r, event) {
+  if (r.kind !== 'api') return;
+  try { roomListener(event, apiView(r)); } catch (err) { console.warn('room listener', err.message); }
+}
+
 const rooms = new Map();     // roomId -> room
 const byCode = new Map();    // friend code -> roomId
 const userRoom = new Map();  // userId -> roomId (one active room per user)
@@ -24,9 +34,9 @@ const userRoom = new Map();  // userId -> roomId (one active room per user)
 // ---------- helpers ----------
 function publicRoom(r) {
   return {
-    id: r.id, kind: r.kind, code: r.kind === 'friends' ? r.code : undefined,
+    id: r.id, kind: r.kind, code: r.kind === 'friends' || r.kind === 'api' ? r.code : undefined,
     players: r.players, entry: r.entry, prize: r.prize, winTokens: r.winTokens, cut: r.cut,
-    timerMin: r.kind === 'timer' ? TIMER_MINUTES : null, status: r.status, hostId: r.hostId,
+    timerMin: r.kind === 'timer' ? TIMER_MINUTES : r.timerMin || null, status: r.status, hostId: r.hostId,
     botsFilled: r.botsFilled, result: r.result || null, fillAt: r.fillAt || null,
     seats: r.seats.map(s => ({ userId: s.bot ? null : s.userId, name: s.name, avatar: s.avatar, photo: s.photo, color: s.color || null, bot: s.bot })),
   };
@@ -54,18 +64,23 @@ function activeRoomOf(userId) {
   return null;
 }
 
-function createRoom({ kind, players, entry, winTokens = 4, cut = true, hostId = null }) {
-  const row = db.prepare('INSERT INTO matches (kind, players, entry, prize, seats) VALUES (?, ?, ?, ?, ?)')
-    .run(kind, players, entry, prizeFor(entry, players), '[]');
+function createRoom({ kind, players, entry, winTokens = 4, cut = true, hostId = null, apiDevId = null, meta = null, timerMin = null }) {
+  let code = null;
+  if (kind === 'friends') { do { code = String(crypto.randomInt(100000, 1000000)); } while (byCode.has(code)); }
+  // API rooms use 8 digits so they never clash with 6-digit friend codes, and stay unique per developer.
+  if (kind === 'api') {
+    do { code = String(crypto.randomInt(10000000, 100000000)); }
+    while (byCode.has(code) || db.prepare('SELECT 1 FROM matches WHERE code = ?').get(code));
+  }
+  const row = db.prepare('INSERT INTO matches (kind, players, entry, prize, seats, code, api_dev_id, meta, timer_min) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(kind, players, entry, prizeFor(entry, players), '[]', code, apiDevId, meta ? JSON.stringify(meta) : null, timerMin);
   const r = {
     id: Number(row.lastInsertRowid), kind, players, entry, prize: prizeFor(entry, players),
     winTokens, cut, hostId, seats: [], status: 'waiting', g: null,
-    clients: new Set(), timer: null, fillTimer: null, botsFilled: false, code: null,
+    clients: new Set(), timer: null, fillTimer: null, botsFilled: false, code,
+    apiDevId, meta, timerMin, createdAt: Date.now(),
   };
-  if (kind === 'friends') {
-    do { r.code = String(crypto.randomInt(100000, 1000000)); } while (byCode.has(r.code));
-    byCode.set(r.code, r.id);
-  }
+  if (code) byCode.set(code, r.id);
   rooms.set(r.id, r);
   return r;
 }
@@ -80,7 +95,7 @@ function seatUser(r, userId, color) {
   saveRow(r);
 }
 
-const labelOf = r => r.kind === 'friends' ? 'Friends room' : r.kind === 'timer' ? 'Timer table' : 'Table';
+const labelOf = r => r.kind === 'friends' ? 'Friends room' : r.kind === 'api' ? 'Room' : r.kind === 'timer' ? 'Timer table' : 'Table';
 
 // ---------- matchmaking ----------
 export function joinTable(userId, { kind, players, entry, color }) {
@@ -131,12 +146,13 @@ export function createFriends(userId, { players, entry = 0, winTokens = 4, cut =
 export function joinFriends(userId, code, color) {
   const id = byCode.get(String(code || '').trim());
   const r = id && rooms.get(id);
-  if (!r || r.status !== 'waiting') throw new AppError('Room not found or already started', 404);
+  if (!r || r.status !== 'waiting' || !['friends', 'api'].includes(r.kind)) throw new AppError('Room not found or already started', 404);
   const existing = activeRoomOf(userId);
   if (existing && existing.id === r.id) return publicRoom(r);
   if (existing) throw new AppError('Finish or leave your current game first');
   if (r.seats.length >= r.players) throw new AppError('Room is full');
   seatUser(r, userId, color);
+  emit(r, 'room.player_joined');
   if (r.seats.length === r.players) start(r); else pushState(r);
   return publicRoom(r);
 }
@@ -160,7 +176,7 @@ export function leave(userId, roomId) {
     tx(() => { for (const s of everyone) if (r.entry > 0) addCoins(s.userId, r.entry, 'refund', `${labelOf(r)} left`); });
     for (const s of everyone) userRoom.delete(s.userId);
     r.seats = r.seats.filter(s => !everyone.includes(s));
-    if (!r.seats.length || everyone.length > 1) {
+    if ((!r.seats.length && r.kind !== 'api') || everyone.length > 1) {
       r.status = 'cancelled';
       clearTimeout(r.fillTimer);
       byCode.delete(r.code);
@@ -198,13 +214,14 @@ function start(r) {
   assignColors(r);
   r.g = L.createGame(r.seats.map(s => ({ id: s.userId, name: s.name, color: s.color, bot: s.bot })), {
     turnSeconds: TURN_SECONDS, winTokens: r.winTokens, cut: r.cut,
-    endsAt: r.kind === 'timer' ? Date.now() + TIMER_MINUTES * 60000 : null,
+    endsAt: r.kind === 'timer' ? Date.now() + TIMER_MINUTES * 60000 : r.timerMin ? Date.now() + r.timerMin * 60000 : null,
   });
   r.status = 'playing';
   db.prepare('UPDATE matches SET players = ?, prize = ? WHERE id = ?').run(r.players, r.prize, r.id);
   for (const s of r.seats) if (!s.bot) db.prepare('UPDATE users SET played = played + 1 WHERE id = ?').run(s.userId);
   saveRow(r);
   changed(r);
+  emit(r, 'game.started');
 }
 
 function changed(r) {
@@ -273,11 +290,12 @@ function finish(r) {
       if (r.prize > 0) addCoins(w.userId, r.prize, 'win', `Won ${labelOf(r).toLowerCase()}`);
       db.prepare('UPDATE users SET won = won + 1 WHERE id = ?').run(w.userId);
     }
-    db.prepare("UPDATE matches SET status = 'over', winner_id = ?, winner_name = ?, finished_at = datetime('now') WHERE id = ?")
-      .run(w.bot ? null : w.userId, w.name, r.id);
+    db.prepare("UPDATE matches SET status = 'over', winner_id = ?, winner_name = ?, finished_at = datetime('now'), result = ? WHERE id = ?")
+      .run(w.bot ? null : w.userId, w.name, JSON.stringify(resultOf(r)), r.id);
   });
   for (const s of r.seats) if (!s.bot && userRoom.get(s.userId) === r.id) userRoom.delete(s.userId);
   pushState(r);
+  emit(r, 'game.finished');
   setTimeout(() => { for (const c of r.clients) c.end(); rooms.delete(r.id); }, 10 * 60000).unref();
 }
 
@@ -387,6 +405,7 @@ export function adminCancel(roomId) {
   byCode.delete(r.code);
   saveRow(r);
   send(r, { type: 'state', room: publicRoom(r), game: null, cancelled: true });
+  emit(r, 'room.cancelled');
 }
 
 // Remove a banned player from any game they are waiting in or playing.
@@ -400,3 +419,132 @@ export const stats = () => ({
   waiting: [...rooms.values()].filter(r => r.status === 'waiting').length,
   playing: [...rooms.values()].filter(r => r.status === 'playing').length,
 });
+
+// ---------- developer API rooms ----------
+const MODES = { classic: 4, '1goti': 1, '2goti': 2, '3goti': 3 };
+
+function progressOf(r) {
+  if (!r.g) return null;
+  const g = r.g;
+  return {
+    phase: g.phase, turn: L.currentSeat(g)?.color || null, dice: g.dice, endsAt: g.endsAt,
+    players: g.seats.map(s => ({
+      name: s.name, color: s.color, left: s.out,
+      gotis: g.tokens[s.color].map(p => (p < 0 ? 'base' : p === L.HOME ? 'home' : p)),
+      home: g.tokens[s.color].filter(p => p === L.HOME).length,
+      score: L.score(g, s.color),
+    })),
+  };
+}
+
+function resultOf(r) {
+  const g = r.g;
+  if (!g?.winner) return null;
+  const order = [...g.seats].filter(s => !s.out).sort((a, b) => L.score(g, b.color) - L.score(g, a.color));
+  const ranking = [g.seats.find(s => s.color === g.winner), ...order.filter(s => s.color !== g.winner), ...g.seats.filter(s => s.out)];
+  return {
+    winner: { name: ranking[0].name, color: ranking[0].color, playerId: ranking[0].bot ? null : ranking[0].id },
+    ranking: ranking.map((s, i) => ({ position: i + 1, name: s.name, color: s.color, playerId: s.bot ? null : s.id, home: g.tokens[s.color].filter(p => p === L.HOME).length, left: s.out })),
+    reason: g.last?.type === 'timeup' ? 'timer' : g.seats.some(s => s.out) && g.ranking.length === 0 ? 'others_left' : 'finished',
+  };
+}
+
+function apiView(r) {
+  return {
+    roomCode: r.code, roomId: r.id, status: r.status,
+    mode: Object.keys(MODES).find(k => MODES[k] === r.winTokens), cut: r.cut, timerMinutes: r.timerMin || null,
+    maxPlayers: r.players, joined: r.seats.length,
+    players: r.seats.map(s => ({ name: s.name, playerId: s.userId, color: s.color || null })),
+    metadata: r.meta || null, createdAt: new Date(r.createdAt).toISOString(),
+    expiresAt: r.status === 'waiting' ? new Date(r.createdAt + API_EXPIRE_MIN * 60000).toISOString() : null,
+    result: r.status === 'over' ? resultOf(r) : null,
+  };
+}
+
+function rowView(m) {
+  const seats = JSON.parse(m.seats);
+  return {
+    roomCode: m.code, roomId: m.id, status: m.status,
+    mode: Object.keys(MODES).find(k => MODES[k] === (JSON.parse(m.meta || 'null')?.__winTokens || 4)) || 'classic',
+    maxPlayers: m.players, joined: seats.length,
+    players: seats.map(s => ({ name: s.name, playerId: s.userId, color: s.color || null })),
+    metadata: (({ __winTokens, ...rest }) => (Object.keys(rest).length ? rest : null))(JSON.parse(m.meta || '{}') || {}),
+    createdAt: new Date(m.created_at.replace(' ', 'T') + 'Z').toISOString(),
+    finishedAt: m.finished_at ? new Date(m.finished_at.replace(' ', 'T') + 'Z').toISOString() : null,
+    result: m.result ? JSON.parse(m.result) : null,
+  };
+}
+
+export function createApiRoom(devId, { players = 2, mode = 'classic', cut = true, timerMinutes = 0, metadata = null } = {}) {
+  players = Number(players);
+  if (![2, 3, 4].includes(players)) throw new AppError('players must be 2, 3 or 4');
+  if (!(mode in MODES)) throw new AppError('mode must be one of: classic, 1goti, 2goti, 3goti');
+  const timerMin = Number(timerMinutes) || 0;
+  if (timerMin && !(timerMin >= 3 && timerMin <= 60)) throw new AppError('timerMinutes must be 0 (off) or 3 to 60');
+  if (metadata !== null && (typeof metadata !== 'object' || JSON.stringify(metadata).length > 1000)) throw new AppError('metadata must be a JSON object under 1000 characters');
+  const r = createRoom({
+    kind: 'api', players, entry: 0, winTokens: MODES[mode], cut: cut !== false && cut !== 'false',
+    apiDevId: devId, meta: metadata ? { ...metadata } : null, timerMin: timerMin || null,
+  });
+  db.prepare('UPDATE matches SET meta = ? WHERE id = ?').run(JSON.stringify({ ...(metadata || {}), __winTokens: MODES[mode] }), r.id);
+  r.expireTimer = setTimeout(() => {
+    if (r.status !== 'waiting') return;
+    r.status = 'expired';
+    for (const s of r.seats) userRoom.delete(s.userId);
+    byCode.delete(r.code);
+    saveRow(r);
+    send(r, { type: 'state', room: publicRoom(r), game: null, cancelled: true });
+    emit(r, 'room.expired');
+  }, API_EXPIRE_MIN * 60000);
+  r.expireTimer.unref?.();
+  return apiView(r);
+}
+
+function apiRoom(devId, code) {
+  const id = byCode.get(String(code));
+  const r = id && rooms.get(id);
+  if (r && r.kind === 'api' && r.apiDevId === devId) return { live: r };
+  const m = db.prepare("SELECT * FROM matches WHERE code = ? AND api_dev_id = ? AND kind = 'api'").get(String(code), devId);
+  if (!m) throw new AppError('Room not found', 404);
+  const lr = rooms.get(m.id);
+  return lr ? { live: lr } : { row: m };
+}
+
+export function apiGetRoom(devId, code) {
+  const { live, row } = apiRoom(devId, code);
+  return live ? apiView(live) : rowView(row);
+}
+
+export function apiProgress(devId, code) {
+  const { live, row } = apiRoom(devId, code);
+  if (!live) return { roomCode: row.code, status: row.status, progress: null, message: 'Live progress is only available while the game is running' };
+  return { roomCode: live.code, status: live.status, progress: progressOf(live) };
+}
+
+export function apiResult(devId, code) {
+  const { live, row } = apiRoom(devId, code);
+  const v = live ? apiView(live) : rowView(row);
+  return { roomCode: v.roomCode, status: v.status, finished: v.status === 'over', result: v.result };
+}
+
+export function apiStart(devId, code) {
+  const { live } = apiRoom(devId, code);
+  if (!live || live.status !== 'waiting') throw new AppError('Room is not waiting for players');
+  if (live.seats.length < 2) throw new AppError('At least 2 players must join before starting');
+  clearTimeout(live.expireTimer);
+  start(live);
+  return apiView(live);
+}
+
+export function apiCancel(devId, code) {
+  const { live } = apiRoom(devId, code);
+  if (!live || !['waiting', 'playing'].includes(live.status)) throw new AppError('Only waiting or running rooms can be cancelled');
+  clearTimeout(live.expireTimer);
+  adminCancel(live.id);
+  return apiView(live);
+}
+
+export function apiList(devId, limit = 50) {
+  const rows = db.prepare("SELECT * FROM matches WHERE api_dev_id = ? AND kind = 'api' ORDER BY id DESC LIMIT ?").all(devId, Math.min(100, Number(limit) || 50));
+  return rows.map(m => (rooms.get(m.id) ? apiView(rooms.get(m.id)) : rowView(m)));
+}

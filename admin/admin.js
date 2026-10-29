@@ -95,7 +95,12 @@ function shell(page, html) {
           ${link('leaderboard', 'trophy', 'Leaderboard')}
           ${link('settings', 'gear', 'App settings')}
         </nav>
-        <div class="side-foot"><a class="btn ghost sm" href="/privacy.html" target="_blank">Privacy policy</a><button class="btn ghost sm" id="logout">${ic.logout} Log out</button></div>
+        <nav class="nav"><small class="muted" style="padding:0 12px;font-weight:700;letter-spacing:.06em">DEVELOPER API</small>
+          ${link('api', 'users', 'Developers')}
+          ${link('plans', 'coin', 'Plans &amp; pricing')}
+          ${link('apilogs', 'live', 'API log')}
+        </nav>
+        <div class="side-foot"><a class="btn ghost sm" href="/" target="_blank">Open website</a><button class="btn ghost sm" id="logout">${ic.logout} Log out</button></div>
       </aside>
       <main class="main">${html}</main>
     </div>`;
@@ -256,6 +261,7 @@ async function settings() {
         <div class="field"><label>YouTube link</label><input class="input" name="youtube" placeholder="https://youtube.com/…" value="${esc(v.youtube)}"></div>
         <div class="field"><label>Contact email (Settings → Contact Us)</label><input class="input" name="contact" type="email" placeholder="support@ludoreal.in" value="${esc(v.contact)}"></div>
       </div>
+      <div class="field"><label>Google Play link (landing page download button)</label><input class="input" name="playStoreUrl" placeholder="https://play.google.com/store/apps/details?id=…" value="${esc(v.playStoreUrl)}"><span class="hint">Leave empty to show “Coming soon” on ludoreal.in.</span></div>
       <div class="field"><label>Share / app link</label><input class="input" name="share" value="${esc(v.share)}"><span class="hint">Used by Share and Refer &amp; Earn. Your Play Store link.</span></div>
       <button class="btn">Save settings</button>
     </form>`);
@@ -263,6 +269,117 @@ async function settings() {
     e.preventDefault();
     busy(e.submitter, async () => { await api('/api/admin/settings', { method: 'PUT', body: Object.fromEntries(new FormData(e.target)) }); toast('Settings saved'); });
   };
+}
+
+
+// ---------- developer API: developers ----------
+let devFilter = '';
+async function apiDevelopers() {
+  shell('api', '<p class="muted">Loading…</p>');
+  const [o, list] = await Promise.all([api('/api/admin/api/overview'), api(`/api/admin/api/developers?filter=${devFilter}`)]);
+  const kpi = (icon, cls, value, label) => `<div class="card kpi"><span class="ki ${cls}">${ic[icon]}</span><div><b>${value}</b><span>${label}</span></div></div>`;
+  shell('api', `
+    <div class="head"><div><h1>Developer API</h1><p class="muted" style="margin:2px 0 0">Developers use <a href="https://api.ludoreal.in" target="_blank" style="color:var(--yellow)">api.ludoreal.in</a></p></div>
+      <div class="chips">${[['', 'All'], ['pending', `Plan requests (${o.pendingRequests})`], ['suspended', 'Suspended']].map(([k, l]) => `<button data-df="${k}" class="${devFilter === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="kpis">
+      ${kpi('users', 'c1', fmt(o.developers), `Developers · +${fmt(o.newThisWeek)} this week`)}
+      ${kpi('live', 'c2', fmt(o.callsToday), `API calls today · ${fmt(o.errorsToday)} errors`)}
+      ${kpi('coin', 'c1', fmt(o.creditsToday), 'Credits used today')}
+      ${kpi('game', 'c3', fmt(o.roomsToday), 'API rooms created today')}
+    </div>
+    <div class="card table-wrap" style="padding:4px">${list.length ? `<table><thead><tr><th>Developer</th><th>Plan</th><th>Credits left</th><th>Calls this month</th><th>Joined</th><th>Status</th></tr></thead><tbody>
+      ${list.map(d => `<tr class="click" data-dev="${d.id}"><td><b>${esc(d.name)}</b><div class="muted small">${esc(d.email)}${d.company ? ` · ${esc(d.company)}` : ''}</div></td>
+        <td>${esc(d.plan || '—')}${d.requested ? ` <span class="tag y">wants ${esc(d.requested)}</span>` : ''}</td><td>${fmt(d.credits)}${d.bonusCredits ? ` <span class="muted small">+${fmt(d.bonusCredits)} extra</span>` : ''}</td>
+        <td>${fmt(d.callsMonth)}</td><td class="muted">${when(d.createdAt)}</td><td>${d.status === 'active' ? '<span class="tag g">Active</span>' : '<span class="tag r">Suspended</span>'}</td></tr>`).join('')}</tbody></table>`
+      : '<p class="empty">No developers here yet.</p>'}</div>`);
+  $$('[data-df]').forEach(b => b.onclick = () => { devFilter = b.dataset.df; apiDevelopers(); });
+  $$('[data-dev]').forEach(r => r.onclick = () => devModal(+r.dataset.dev, apiDevelopers));
+}
+
+async function devModal(id, reload) {
+  const [d, { plans }] = await Promise.all([api(`/api/admin/api/developers/${id}`), api('/api/admin/api/plans')]);
+  const v = d.dev;
+  const m = modal(v.name, `
+    <p class="muted small" style="margin:-4px 0 12px">${esc(v.email)}${v.company ? ` · ${esc(v.company)}` : ''} · joined ${when(v.createdAt)}</p>
+    ${v.requestedPlan ? `<div class="card" style="margin-bottom:14px;border-color:var(--yellow)"><b>Requested plan: ${esc(v.requestedPlan.name)}</b> (${esc(v.requestedPlan.price || '')})
+      <div class="row" style="margin-top:10px"><button class="btn green sm" id="approve">Approve</button><button class="btn ghost sm" id="reject">Reject</button></div></div>` : ''}
+    <div class="stat-row"><div><b>${esc(v.plan?.name || '—')}</b><span>Plan</span></div><div><b>${fmt(v.credits)}</b><span>Plan credits left</span></div>
+      <div><b>${fmt(v.bonusCredits)}</b><span>Extra credits</span></div><div><b>${fmt(d.keys.filter(k => !k.revoked).length)}</b><span>Active keys</span></div></div>
+    <form id="planF" class="row" style="margin-bottom:6px"><div class="field"><label>Change plan</label><select class="input" name="planId">${plans.map(p => `<option value="${p.id}" ${p.id === v.plan?.id ? 'selected' : ''}>${esc(p.name)} · ${fmt(p.credits)} credits${p.active ? '' : ' (hidden)'}</option>`).join('')}</select></div>
+      <button class="btn sm" style="margin-bottom:14px">Set plan</button></form>
+    <p class="hint" style="margin:-6px 0 14px">Setting a plan refills its monthly credits now.</p>
+    <form id="credF" class="row"><div class="field"><label>Add extra credits (minus to remove)</label><input class="input" name="addCredits" type="number" step="1" placeholder="e.g. 5000" required></div><button class="btn green sm" style="margin-bottom:14px">Apply</button></form>
+    <div class="row" style="margin-bottom:16px">${v.status === 'active' ? '<button class="btn red sm" id="susp">Suspend developer</button>' : '<button class="btn green sm" id="unsusp">Reactivate developer</button>'}
+      <button class="btn ghost sm" id="pw">Set new password</button></div>
+    <div class="two"><div><h3 style="margin-bottom:8px">API keys</h3>${d.keys.length ? d.keys.map(k => `<div class="list-row"><span><code>${esc(k.prefix)}…</code> ${esc(k.name)}<small>used ${when(k.last_used)}</small></span>${k.revoked ? '<span class="tag r">revoked</span>' : '<span class="tag g">active</span>'}</div>`).join('') : '<p class="muted small">No keys.</p>'}
+      <h3 style="margin:14px 0 8px">Rooms</h3><p class="muted small">${d.rooms.map(r => `${r.n} ${r.status}`).join(' · ') || 'None yet'}</p></div>
+      <div><h3 style="margin-bottom:8px">Recent requests</h3>${d.logs.length ? d.logs.slice(0, 15).map(l => `<div class="list-row"><span><code>${esc(l.endpoint)}</code><small>${when(l.created_at)} · ${esc(l.ip || '')}</small></span><span><span class="tag ${l.status < 400 ? 'g' : 'r'}">${l.status}</span> ${l.cost}</span></div>`).join('') : '<p class="muted small">No requests yet.</p>'}</div></div>`);
+  const save = (btn, body, msg) => busy(btn, async () => { await api(`/api/admin/api/developers/${id}`, { method: 'PATCH', body }); toast(msg); m.close(); reload?.(); devModal(id, reload); });
+  $('#approve', m.el)?.addEventListener('click', e => save(e.currentTarget, { approveRequest: true }, 'Plan approved'));
+  $('#reject', m.el)?.addEventListener('click', e => save(e.currentTarget, { rejectRequest: true }, 'Request rejected'));
+  $('#planF', m.el).onsubmit = e => { e.preventDefault(); save(e.submitter, { planId: +new FormData(e.target).get('planId') }, 'Plan updated'); };
+  $('#credF', m.el).onsubmit = e => { e.preventDefault(); save(e.submitter, { addCredits: new FormData(e.target).get('addCredits') }, 'Credits updated'); };
+  $('#susp', m.el)?.addEventListener('click', e => { if (confirm('Suspend this developer? Their API keys stop working.')) save(e.currentTarget, { status: 'suspended' }, 'Developer suspended'); });
+  $('#unsusp', m.el)?.addEventListener('click', e => save(e.currentTarget, { status: 'active' }, 'Developer reactivated'));
+  $('#pw', m.el).onclick = e => { const p = prompt('New password for this developer (min 8 characters):'); if (p) save(e.currentTarget, { newPassword: p }, 'Password changed'); };
+}
+
+// ---------- developer API: plans and costs ----------
+async function apiPlans() {
+  shell('plans', '<p class="muted">Loading…</p>');
+  const [{ plans, endpoints }, costs] = await Promise.all([api('/api/admin/api/plans'), api('/api/admin/api/costs')]);
+  shell('plans', `
+    <div class="head"><div><h1>Plans &amp; pricing</h1><p class="muted" style="margin:2px 0 0">What developers see on api.ludoreal.in</p></div><button class="btn" id="newPlan">New plan</button></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));margin-bottom:22px">
+      ${plans.map(p => `<div class="card" style="${p.active ? '' : 'opacity:.6'}"><div class="sec" style="margin-bottom:6px"><h3>${esc(p.name)}</h3><span>${p.isDefault ? '<span class="tag y">default</span>' : ''} ${p.active ? '' : '<span class="tag">hidden</span>'}</span></div>
+        <div style="font-size:22px;font-weight:800;color:var(--yellow)">${esc(p.price || '—')}</div>
+        <p class="muted small" style="margin:4px 0 8px">${fmt(p.credits)} credits / month · ${fmt(p.ratePerMin)} req/min · ${fmt(p.developers)} developer${p.developers === 1 ? '' : 's'}</p>
+        <div class="seat-row" style="margin-bottom:12px">${endpoints.filter(e => !e.always).map(e => `<span class="tag ${p.endpoints.includes(e.key) ? 'g' : ''}" style="${p.endpoints.includes(e.key) ? '' : 'opacity:.45;text-decoration:line-through'}">${esc(e.key)}</span>`).join('')}</div>
+        <button class="btn ghost sm" data-edit="${p.id}">Edit plan</button></div>`).join('')}
+    </div>
+    <form class="card" id="costF" style="max-width:820px"><div class="sec"><h3>Credits per request</h3><span class="muted small">Charged only when a request succeeds</span></div>
+      <table><thead><tr><th>Endpoint</th><th>What it does</th><th style="width:130px">Credits</th></tr></thead><tbody>
+        ${costs.map(c => `<tr><td><code>${esc(c.method)} ${esc(c.path)}</code></td><td class="muted">${esc(c.title)}</td><td><input class="input" type="number" min="0" step="1" name="${esc(c.key)}" value="${c.cost}"></td></tr>`).join('')}</tbody></table>
+      <button class="btn" style="margin-top:12px">Save credit costs</button></form>`);
+  $('#newPlan').onclick = () => planModal(null, endpoints);
+  $$('[data-edit]').forEach(b => b.onclick = () => planModal(plans.find(p => p.id === +b.dataset.edit), endpoints));
+  $('#costF').onsubmit = e => { e.preventDefault(); busy(e.submitter, async () => { await api('/api/admin/api/costs', { method: 'PUT', body: Object.fromEntries(new FormData(e.target)) }); toast('Credit costs saved'); }); };
+}
+
+function planModal(p, endpoints) {
+  const m = modal(p ? `Edit ${p.name}` : 'New plan', `<form id="pf">
+    <div class="row"><div class="field"><label>Name</label><input class="input" name="name" required maxlength="30" value="${esc(p?.name || '')}"></div>
+      <div class="field"><label>Price shown to developers</label><input class="input" name="price" maxlength="40" placeholder="₹999 / month" value="${esc(p?.price || '')}"></div></div>
+    <div class="row"><div class="field"><label>Credits per month</label><input class="input" name="credits" type="number" min="0" required value="${p?.credits ?? 1000}"></div>
+      <div class="field"><label>Requests per minute</label><input class="input" name="ratePerMin" type="number" min="1" required value="${p?.ratePerMin ?? 60}"></div>
+      <div class="field"><label>Order</label><input class="input" name="sort" type="number" value="${p?.sort ?? 0}"></div></div>
+    <div class="field"><label>Description</label><input class="input" name="description" maxlength="200" value="${esc(p?.description || '')}"></div>
+    <div class="field"><label>Endpoints allowed in this plan</label><div class="grid" style="grid-template-columns:1fr 1fr;gap:8px">
+      ${endpoints.map(e => `<label class="card" style="padding:10px;display:flex;gap:10px;align-items:center;cursor:${e.always ? 'default' : 'pointer'}">
+        <input type="checkbox" name="ep" value="${esc(e.key)}" ${e.always || p?.endpoints.includes(e.key) || (!p && e.key !== 'rooms.cancel') ? 'checked' : ''} ${e.always ? 'disabled' : ''} style="width:18px;height:18px;accent-color:#fab005">
+        <span><code>${esc(e.method)} ${esc(e.path)}</code><br><span class="muted small">${esc(e.title)}${e.always ? ' (always allowed)' : ''}</span></span></label>`).join('')}</div></div>
+    <div class="row" style="margin-bottom:14px"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="active" ${p?.active === false ? '' : 'checked'} style="width:18px;height:18px;accent-color:#fab005"> Show on pricing page</label>
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="isDefault" ${p?.isDefault ? 'checked' : ''} style="width:18px;height:18px;accent-color:#fab005"> Give to new developers</label></div>
+    <button class="btn" style="width:100%">${p ? 'Save plan' : 'Create plan'}</button></form>`);
+  $('#pf', m.el).onsubmit = e => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const body = { name: f.get('name'), price: f.get('price'), credits: f.get('credits'), ratePerMin: f.get('ratePerMin'), sort: f.get('sort'), description: f.get('description'),
+      endpoints: [...f.getAll('ep'), ...endpoints.filter(x => x.always).map(x => x.key)], active: f.get('active') === 'on', isDefault: f.get('isDefault') === 'on' };
+    busy(e.submitter, async () => { await api(p ? `/api/admin/api/plans/${p.id}` : '/api/admin/api/plans', { method: p ? 'PUT' : 'POST', body }); toast(p ? 'Plan saved' : 'Plan created'); m.close(); apiPlans(); });
+  };
+}
+
+// ---------- developer API: request log ----------
+async function apiLogs() {
+  shell('apilogs', '<p class="muted">Loading…</p>');
+  const list = await api('/api/admin/api/logs');
+  shell('apilogs', `<div class="head"><h1>API request log</h1><span class="muted">Last 200 requests from all developers</span></div>
+    <div class="card table-wrap" style="padding:4px">${list.length ? `<table><thead><tr><th>Time</th><th>Developer</th><th>Endpoint</th><th>Status</th><th>Credits</th><th>ms</th><th>IP</th></tr></thead><tbody>
+      ${list.map(l => `<tr class="click" data-dev="${l.dev_id}"><td class="muted">${when(l.created_at)}</td><td>${esc(l.email || l.dev_id)}</td><td><code>${esc(l.endpoint)}</code></td>
+        <td><span class="tag ${l.status < 400 ? 'g' : 'r'}">${l.status}</span></td><td>${l.cost}</td><td class="muted">${l.ms ?? '—'}</td><td class="muted">${esc(l.ip || '')}</td></tr>`).join('')}</tbody></table>`
+      : '<p class="empty">No API requests yet.</p>'}</div>`);
+  $$('[data-dev]').forEach(r => r.onclick = () => devModal(+r.dataset.dev, apiLogs));
 }
 
 // ---------- router ----------
@@ -275,6 +392,9 @@ async function route() {
     else if (page === 'games') await games();
     else if (page === 'leaderboard') await leaderboard();
     else if (page === 'settings') await settings();
+    else if (page === 'api') await apiDevelopers();
+    else if (page === 'plans') await apiPlans();
+    else if (page === 'apilogs') await apiLogs();
     else await dashboard();
   } catch (err) { if (localStorage.getItem(TOKEN)) toast(err.message, true); }
 }

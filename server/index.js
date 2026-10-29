@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, tx, addCoins, getUser, getSettings } from './db.js';
 import { adminApi } from './admin.js';
+import { devPortal, publicApi } from './devapi.js';
 import { AppError, signToken, verifyToken, requireUser, verifyFirebaseToken } from './auth.js';
 import * as R from './rooms.js';
 
@@ -92,6 +93,19 @@ app.get('/api/config', (req, res) => {
 });
 
 app.use('/api/admin', adminApi);
+app.use('/api/dev', devPortal);
+
+// Landing page info (download link, contact).
+app.get('/api/site', (req, res) => { const s = getSettings(); res.json({ playStoreUrl: s.playStoreUrl, contact: s.contact }); });
+
+// Public developer API (api.ludoreal.in/v1). Keys are secret, so this is meant for servers, not browsers.
+app.use('/v1', (req, res, next) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+}, publicApi);
 
 // Live game stream (EventSource can't send headers, so the token is in the query).
 app.get('/api/match/:id/stream', (req, res) => {
@@ -199,7 +213,10 @@ app.post('/api/match/:id/chat', (req, res) => { R.chat(req.userId, req.params.id
 app.get('/healthz', (req, res) => res.json({ ok: true, ...R.stats() }));
 // The game runs only in the Android app. Locally (SERVE_GAME=1) the screens can be opened in a browser for testing.
 if (process.env.SERVE_GAME === '1') app.use(express.static(path.join(__dirname, '..', 'www')));
-app.use(express.static(path.join(__dirname, '..', 'admin')));
+// In production Nginx serves these folders; locally the Node server does (portal at /portal).
+app.use('/sradmin', express.static(path.join(__dirname, '..', 'admin')));
+app.use('/portal', express.static(path.join(__dirname, '..', 'portal')));
+app.use(express.static(path.join(__dirname, '..', 'site')));
 
 app.use((err, req, res, next) => {
   const status = err.status && err.status < 600 ? err.status : 500;

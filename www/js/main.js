@@ -227,7 +227,7 @@ function friendsScreen(tab = 'create') {
     </section>` : `
     <section class="panel">
       <div class="panel-head">Enter room code</div>
-      <input class="code-input" id="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off">
+      <input class="code-input" id="code" inputmode="numeric" maxlength="8" placeholder="Room code" autocomplete="off">
       <button class="btn-green wide" id="join">Join Room</button>
     </section>`}
     <p class="hint-c">Your colour: <b style="color:${COLORS[color]}">${color}</b> (change it in Play With Table)</p>`, 'select');
@@ -243,7 +243,7 @@ function friendsScreen(tab = 'create') {
   }));
   $('#join')?.addEventListener('click', e => busy(e.currentTarget, async () => {
     const code = $('#code').value.trim();
-    if (!/^\d{6}$/.test(code)) throw new Error('Enter the 6-digit code');
+    if (!/^\d{6}(\d{2})?$/.test(code)) throw new Error('Enter the 6 or 8-digit room code');
     const room = await api('/api/match/friends/join', { method: 'POST', body: { code, color } });
     await reloadMe();
     onlineGame(room.id);
@@ -270,10 +270,11 @@ function onlineGame(roomId) {
 
   function lobby(r) {
     clearInterval(countdown);
-    const friends = r.kind === 'friends';
+    const friends = r.kind === 'friends' || r.kind === 'api';
+    const apiRoom = r.kind === 'api';
     const host = r.hostId === me.id;
     screen(`
-      <header class="sub-bar"><button class="round-btn" id="leave">${ico.back}</button><h1>${friends ? 'Friends Room' : 'Finding players'}</h1><span class="prize-chip">${ico.trophy}${fmt(r.prize)}</span></header>
+      <header class="sub-bar"><button class="round-btn" id="leave">${ico.back}</button><h1>${apiRoom ? 'Room' : friends ? 'Friends Room' : 'Finding players'}</h1><span class="prize-chip">${ico.trophy}${fmt(r.prize)}</span></header>
       ${friends ? `<section class="panel code-panel"><div class="panel-head">Room code</div><div class="room-code">${esc(r.code)}</div>
         <div class="row-c"><button class="btn-yellow" id="copy">${ico.copy} Copy</button><button class="btn-yellow" id="shareCode">${ico.share} Share</button></div>
         <p class="hint-c">${r.winTokens === 4 ? 'Classic' : `${r.winTokens} Goti`} · ${r.cut ? 'Cut allowed' : 'No cut'} · Entry ${r.entry ? fmt(r.entry) : 'Free'}</p></section>` : ''}
@@ -285,7 +286,7 @@ function onlineGame(roomId) {
         }).join('')}</div>
         ${!friends ? `<p class="hint-c" id="fillNote">Searching for players… <b id="cd"></b></p>` : ''}
         ${friends && host ? `<button class="btn-green wide" id="start" ${r.seats.length < 2 ? 'disabled' : ''}>Start Game</button>` : ''}
-        ${friends && !host ? '<p class="hint-c">Waiting for the host to start…</p>' : ''}
+        ${apiRoom ? '<p class="hint-c">The game starts when every player has joined.</p>' : friends && !host ? '<p class="hint-c">Waiting for the host to start…</p>' : ''}
       </section>`, 'select', true);
     $('#leave').onclick = leave;
     setBack(() => { leave(); return true; });
@@ -389,7 +390,7 @@ function onlineGame(roomId) {
         <div class="row-c"><button class="btn-green" id="again">Play Again</button><button class="btn-yellow" id="home">Home</button></div>
       </div>`, { onClose: () => menuScreen() });
     $('#home', m.el).onclick = () => m.close();
-    $('#again', m.el).onclick = () => { m.el.remove(); r.kind === 'friends' ? friendsScreen() : selectScreen(r.kind, r.players); };
+    $('#again', m.el).onclick = () => { m.el.remove(); ['friends', 'api'].includes(r.kind) ? friendsScreen() : selectScreen(r.kind, r.players); };
   }
 }
 

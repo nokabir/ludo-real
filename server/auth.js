@@ -35,6 +35,23 @@ export function requireUser(req, res, next) {
   next();
 }
 
+// Signed token with any payload (used for developer-portal sessions).
+export function signPayload(payload, ttlMs) {
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + ttlMs })).toString('base64url');
+  return `${body}.${crypto.createHmac('sha256', SECRET).update(body).digest('base64url')}`;
+}
+
+export function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return `${salt}:${crypto.scryptSync(password, salt, 64).toString('hex')}`;
+}
+
+export function checkPassword(password, stored) {
+  const [salt, hash] = String(stored || '').split(':');
+  if (!salt || !hash) return false;
+  return crypto.timingSafeEqual(crypto.scryptSync(String(password), salt, 64), Buffer.from(hash, 'hex'));
+}
+
 // ---------- admin ----------
 export function signAdminToken() {
   const body = Buffer.from(JSON.stringify({ admin: true, exp: Date.now() + 12 * 3600e3 })).toString('base64url');
