@@ -189,4 +189,5 @@ app.use((err, req, res, next) => {
 
 R.refundInterrupted();
 const port = Number(process.env.PORT || 3090);
-app.listen(port, () => console.log(`Ludo Real server on http://localhost:${port}`));
+const host = process.env.HOST || '0.0.0.0';   // 127.0.0.1 behind Nginx
+app.listen(port, host, () => console.log(`Ludo Real server on http://${host}:${port}`));
